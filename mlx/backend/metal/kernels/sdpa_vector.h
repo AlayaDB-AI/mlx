@@ -11,6 +11,7 @@ constant bool bool_mask [[function_constant(23)]];
 constant bool float_mask [[function_constant(24)]];
 constant bool has_sinks [[function_constant(25)]];
 constant int blocks [[function_constant(26)]];
+constant bool output_lse [[function_constant(27)]];
 
 template <typename T, int D, int V = D>
 [[kernel]] void sdpa_vector(
@@ -36,6 +37,7 @@ template <typename T, int D, int V = D>
     const device T* sinks [[buffer(16), function_constant(has_sinks)]],
     const constant int& num_q_heads
     [[buffer(17), function_constant(has_sinks)]],
+    device float* LSE [[buffer(18), function_constant(output_lse)]],
     uint3 tid [[threadgroup_position_in_grid]],
     uint3 tpg [[threadgroups_per_grid]],
     uint simd_gid [[simdgroup_index_in_threadgroup]],
@@ -173,6 +175,10 @@ template <typename T, int D, int V = D>
     for (int i = 0; i < v_per_thread; i++) {
       out[i] = static_cast<T>(o[i]);
     }
+  }
+
+  if (output_lse && simd_gid == 0 && simd_lid == 0) {
+    LSE[o_offset] = log(sum_exp_score) + new_max;
   }
 }
 
@@ -323,6 +329,7 @@ template <typename T, int D>
     const device float* sums [[buffer(1)]],
     const device float* maxs [[buffer(2)]],
     device T* out [[buffer(3)]],
+    device float* LSE [[buffer(4), function_constant(output_lse)]],
     uint3 tid [[threadgroup_position_in_grid]],
     uint3 tpg [[threadgroups_per_grid]],
     uint simd_gid [[simdgroup_index_in_threadgroup]],
@@ -389,5 +396,9 @@ template <typename T, int D>
     for (int i = 0; i < elem_per_thread; i++) {
       out[i] = static_cast<T>(o[i]);
     }
+  }
+
+  if (output_lse && simd_gid == 0 && simd_lid == 0) {
+    LSE[q_offset] = log(sum_exp_score) + max_score;
   }
 }

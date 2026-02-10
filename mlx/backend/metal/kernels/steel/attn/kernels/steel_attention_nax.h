@@ -17,6 +17,7 @@ constant bool align_K [[function_constant(201)]];
 constant bool has_mask [[function_constant(300)]];
 constant bool do_causal [[function_constant(301)]];
 constant bool has_sinks [[function_constant(302)]];
+constant bool output_lse [[function_constant(303)]];
 
 template <typename T>
 struct TransformScale {
@@ -89,6 +90,7 @@ template <
     const constant AttnMaskParams* mask_params [[buffer(5), function_constant(has_mask)]],
     const device MaskType* mask [[buffer(6), function_constant(has_mask)]],
     const device T* sinks [[buffer(7), function_constant(has_sinks)]],
+    device float* LSE [[buffer(8), function_constant(output_lse)]],
     uint simd_lane_id [[thread_index_in_simdgroup]],
     uint simd_group_id [[simdgroup_index_in_threadgroup]],
     uint3 tid [[threadgroup_position_in_grid]],
