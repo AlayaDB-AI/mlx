@@ -592,16 +592,16 @@ bool RoPE::is_equivalent(const Primitive& other) const {
       forward_ == a_other.forward_);
 }
 
-/** Computes: O = softmax(Q @ K.T) @ V **/
-array scaled_dot_product_attention(
+static std::vector<array> scaled_dot_product_attention_impl(
     const array& queries,
     const array& keys,
     const array& values,
     const float scale,
-    const std::string& mask_mode /* = "" */,
-    std::optional<array> mask_arr /* = {} */,
-    const std::optional<array>& sinks /* = {} */,
-    StreamOrDevice s /* = {}*/) {
+    const std::string& mask_mode,
+    std::optional<array> mask_arr,
+    const std::optional<array>& sinks,
+    bool return_logsumexp,
+    StreamOrDevice s) {
   for (const auto& tensor : {queries, keys, values}) {
     if (tensor.ndim() != 4) {
       std::ostringstream msg;
@@ -697,12 +697,21 @@ array scaled_dot_product_attention(
   auto k = astype(keys, final_type, s);
   auto v = astype(values, final_type, s);
 
+  auto stream = to_stream(s);
+  bool is_training = detail::in_grad_tracing();
+  bool has_fast_vjp = !ScaledDotProductAttentionVJP::use_fallback(q, stream);
+  bool output_logsumexp = is_training && has_fast_vjp;
+  if (return_logsumexp) {
+    output_logsumexp = true;
+  }
+
   auto fallback = [scale,
                    n_q_heads,
                    n_kv_heads,
                    do_causal,
                    has_sinks,
                    has_arr_mask,
+                   output_logsumexp,
                    s](const std::vector<array>& inputs) {
     auto q = multiply(array(scale, inputs[0].dtype()), inputs[0], s);
     int n_repeats = n_q_heads / n_kv_heads;
@@ -756,6 +765,13 @@ array scaled_dot_product_attention(
       bsx_shape.back() = 1;
       scores = concatenate({broadcast_to(sinks, bsx_shape, s), scores}, -1, s);
     }
+    std::optional<array> lse;
+    if (output_logsumexp) {
+      lse = logsumexp(scores, -1, true, s);
+      if (n_repeats > 1) {
+        lse = flatten(*lse, 1, 2, s);
+      }
+    }
     scores = softmax(scores, std::vector<int>{-1}, true, s);
     if (has_sinks) {
       // Slice off scores
@@ -768,10 +784,12 @@ array scaled_dot_product_attention(
     if (n_repeats > 1) {
       out = flatten(out, 1, 2, s);
     }
+    if (output_logsumexp) {
+      return std::vector<array>{out, *lse};
+    }
     return std::vector<array>{out};
   };
 
-  auto stream = to_stream(s);
   std::vector<array> inputs = {q, k, v};
   if (has_arr_mask) {
     // Check type
@@ -805,9 +823,6 @@ array scaled_dot_product_attention(
     inputs.push_back(astype(*sinks, final_type, stream));
   }
 
-  bool is_training = detail::in_grad_tracing();
-  bool has_fast_vjp = !ScaledDotProductAttentionVJP::use_fallback(q, stream);
-  bool output_logsumexp = is_training && has_fast_vjp;
   if (!ScaledDotProductAttention::use_fallback(
           q,
           k,
@@ -835,13 +850,40 @@ array scaled_dot_product_attention(
           {std::move(out_shape), Shape{q.shape(0), q.shape(1), q.shape(2), 1}},
           {final_type, float32},
           primitive,
-          std::move(inputs))[0];
-    } else {
-      return array(
-          std::move(out_shape), final_type, primitive, std::move(inputs));
+          std::move(inputs));
     }
+    return std::vector<array>{array(
+        std::move(out_shape), final_type, primitive, std::move(inputs))};
   }
-  return fallback(std::move(inputs))[0];
+  return fallback(std::move(inputs));
+}
+
+/** Computes: O = softmax(Q @ K.T) @ V **/
+array scaled_dot_product_attention(
+    const array& queries,
+    const array& keys,
+    const array& values,
+    const float scale,
+    const std::string& mask_mode /* = "" */,
+    std::optional<array> mask_arr /* = {} */,
+    const std::optional<array>& sinks /* = {} */,
+    StreamOrDevice s /* = {}*/) {
+  return scaled_dot_product_attention_impl(
+      queries, keys, values, scale, mask_mode, std::move(mask_arr), sinks, false, s)[0];
+}
+
+std::pair<array, array> scaled_dot_product_attention_with_lse(
+    const array& queries,
+    const array& keys,
+    const array& values,
+    const float scale,
+    const std::string& mask_mode /* = "" */,
+    std::optional<array> mask_arr /* = {} */,
+    const std::optional<array>& sinks /* = {} */,
+    StreamOrDevice s /* = {}*/) {
+  auto outputs = scaled_dot_product_attention_impl(
+      queries, keys, values, scale, mask_mode, std::move(mask_arr), sinks, true, s);
+  return {outputs[0], outputs[1]};
 }
 
 std::vector<array> ScaledDotProductAttention::vjp(

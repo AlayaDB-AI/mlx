@@ -197,7 +197,8 @@ void init_fast(nb::module_& parent_module) {
          const float scale,
          const std::variant<std::monostate, std::string, mx::array>& mask,
          const std::optional<mx::array>& sinks,
-         mx::StreamOrDevice s) {
+         bool return_softmax_lse,
+         mx::StreamOrDevice s) -> nb::object {
         bool has_mask = !std::holds_alternative<std::monostate>(mask);
         bool has_str_mask =
             has_mask && std::holds_alternative<std::string>(mask);
@@ -212,17 +213,32 @@ void init_fast(nb::module_& parent_module) {
                   << mask_str << "'. Must be 'causal', or an array.";
               throw std::invalid_argument(msg.str());
             }
-            return mx::fast::scaled_dot_product_attention(
-                queries, keys, values, scale, mask_str, std::nullopt, sinks, s);
+            if (return_softmax_lse) {
+              auto result = mx::fast::scaled_dot_product_attention_with_lse(
+                  queries, keys, values, scale, mask_str, std::nullopt, sinks, s);
+              return nb::make_tuple(result.first, result.second);
+            }
+            return nb::cast(mx::fast::scaled_dot_product_attention(
+                queries, keys, values, scale, mask_str, std::nullopt, sinks, s));
           } else {
             auto mask_arr = std::get<mx::array>(mask);
-            return mx::fast::scaled_dot_product_attention(
-                queries, keys, values, scale, "", mask_arr, sinks, s);
+            if (return_softmax_lse) {
+              auto result = mx::fast::scaled_dot_product_attention_with_lse(
+                  queries, keys, values, scale, "", mask_arr, sinks, s);
+              return nb::make_tuple(result.first, result.second);
+            }
+            return nb::cast(mx::fast::scaled_dot_product_attention(
+                queries, keys, values, scale, "", mask_arr, sinks, s));
           }
 
         } else {
-          return mx::fast::scaled_dot_product_attention(
-              queries, keys, values, scale, "", {}, sinks, s);
+          if (return_softmax_lse) {
+            auto result = mx::fast::scaled_dot_product_attention_with_lse(
+                queries, keys, values, scale, "", {}, sinks, s);
+            return nb::make_tuple(result.first, result.second);
+          }
+          return nb::cast(mx::fast::scaled_dot_product_attention(
+              queries, keys, values, scale, "", {}, sinks, s));
         }
       },
       "q"_a,
@@ -232,9 +248,10 @@ void init_fast(nb::module_& parent_module) {
       "scale"_a,
       "mask"_a = nb::none(),
       "sinks"_a = nb::none(),
+      "return_softmax_lse"_a = false,
       "stream"_a = nb::none(),
       nb::sig(
-          "def scaled_dot_product_attention(q: array, k: array, v: array, *, scale: float,  mask: Union[None, str, array] = None, sinks: Optional[array] = None, stream: Union[None, Stream, Device] = None) -> array"),
+          "def scaled_dot_product_attention(q: array, k: array, v: array, *, scale: float,  mask: Union[None, str, array] = None, sinks: Optional[array] = None, return_softmax_lse: bool = False, stream: Union[None, Stream, Device] = None) -> Union[array, Tuple[array, array]]"),
       R"pbdoc(
         A fast implementation of multi-head attention: ``O = softmax(Q @ K.T, dim=-1) @ V``.
 
@@ -276,9 +293,12 @@ void init_fast(nb::module_& parent_module) {
                last query aligns with the last key.
             sinks (array, optional): An optional array of attention sinks.
                Default: ``None``.
+            return_softmax_lse (bool): If ``True``, also return the logsumexp
+               of the attention scores. Default: ``False``.
 
         Returns:
-            array: The output array.
+            array or Tuple[array, array]: The output array, optionally paired
+            with the logsumexp.
 
         Example:
 

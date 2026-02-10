@@ -3,6 +3,7 @@
 #pragma once
 
 #include <optional>
+#include <utility>
 #include <variant>
 
 #include "mlx/api.h"
@@ -45,6 +46,16 @@ MLX_API array rope(
 
 /** Computes: O = softmax(Q @ K.T) @ V **/
 MLX_API array scaled_dot_product_attention(
+    const array& queries,
+    const array& keys,
+    const array& values,
+    const float scale,
+    const std::string& mask_mode = "",
+    std::optional<array> mask_arr = {},
+    const std::optional<array>& sinks = {},
+    StreamOrDevice s = {});
+
+MLX_API std::pair<array, array> scaled_dot_product_attention_with_lse(
     const array& queries,
     const array& keys,
     const array& values,
